@@ -24,6 +24,20 @@ class server {
         this.netServer = net.createServer((connection: net.Socket) =>  this.handleConnection(connection))
     }
 
+    private PassiveDeletion() {
+        const currentTime = Date.now()
+        this.Data.forEach((document) =>  {
+            if ( document.expire ===   0) {
+                return;
+            } 
+
+            if ( document.expire < currentTime ) {
+                this.Data.delete(document.key);
+                console.log("Deleted Expired Data");
+            }
+        })
+    }
+
     async GetCommands(): Promise<void> {
         const CommandsDirectory = fs.readdirSync(`./app/commands/`)
 
@@ -81,6 +95,7 @@ class server {
 
         if ( command ) {
             command.run(connection, args, this.Data);
+            this.PassiveDeletion();
         } else {
             connection.write("-Error: Command not found\r\n")
         }
