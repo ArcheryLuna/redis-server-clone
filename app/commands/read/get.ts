@@ -12,13 +12,25 @@ export default {
             return;
         }
 
+        const currentTime = Date.now();
         const value = Data.get(args[0])
+        
+        if ( value?.expire ===   0 ) {
+            if ( value?.value ) {
+                connection.write(`+${value.value}\r\n`)
+                return;
+            } else {
+                connection.write(`-Error: No value found`);
+            }  
+        }
 
-        if ( value?.value ) {
-            connection.write(`+${value.value}\r\n`)
-            return;
-        } else {
-            connection.write(`-Error: No value found`);
+        if ( value?.expire ) {
+            if ( value.expire <= currentTime) {
+                Data.delete(args[0]);
+                connection.write("$-1\r\n")
+            } else {
+                connection.write(`+${value.value}\r\n`);
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
 export interface DatabaseSchema {
     key: string,
-    value: any
+    value: any,
+    expire: number
 }
