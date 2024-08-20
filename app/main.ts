@@ -5,6 +5,8 @@ import { DatabaseSchema, RDBConfig } from "./types";
 import { parseCommandLineArgs } from "./utils/parseCommandLineArgs";
 import { RESPEncoder } from "./utils/RESPEncoder";
 
+import RDBFileLogic from "./utils/RDBFileLogic";
+
 // Config JSON
 import RDBConfigJson from "./configs/rdbconfig.json";
 
@@ -35,6 +37,8 @@ export class server {
         this.directory = directory;
         this.dbFilename = dbFilename;
         this.netServer = net.createServer((connection: net.Socket) =>  this.handleConnection(connection))
+
+        RDBFileLogic.getRDBFiles(this, this.Data)
     }
 
     private PassiveDeletion() {
@@ -116,6 +120,8 @@ export class server {
 
 
     start(port: number, ipAddress: string) {
+        RDBFileLogic.ensureDirectoryExists(this.directory);
+
         this.netServer.listen(port, ipAddress);
     }
 }
