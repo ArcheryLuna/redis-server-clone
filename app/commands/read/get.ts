@@ -1,12 +1,13 @@
 import * as net from "net";
 import { DatabaseSchema } from "../../types";
+import { server } from "../../main";
 
 export default {
     data: {
         name: "get",
         description: "This command get's data from the database"
     },
-    async run( connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>  ) {
+    async run( connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) {
         if ( args.length < 1 ) {
             connection.write("-Error: No arguments were parsed\r\n");
             return;

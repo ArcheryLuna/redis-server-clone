@@ -3,3 +3,8 @@ export interface DatabaseSchema {
     value: any,
     expire: number
 }
+
+export interface RDBConfig {
+    dir: string,
+    dbfilename: string
+}

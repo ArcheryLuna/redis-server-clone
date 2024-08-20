@@ -1,14 +1,19 @@
 import * as net from "net";
 import fs from "fs"
 import path from "path";
-import { DatabaseSchema } from "./types";
+import { DatabaseSchema, RDBConfig } from "./types";
+import { parseCommandLineArgs } from "./utils/parseCommandLineArgs";
+import { RESPEncoder } from "./utils/RESPEncoder";
+
+// Config JSON
+import RDBConfigJson from "./configs/rdbconfig.json";
 
 // You can use print statements as follows for debugging, they'll be visible when running tests.
 console.log("Logs from your program will appear here!");
 
 // Uncomment this block to pass the first stage
 
-class server {
+export class server {
     
     private netServer: net.Server
     private Commands: Map<string, {
@@ -16,11 +21,19 @@ class server {
             name: string,
             description: string
         },
-        run: (connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>) =>  void
+        run: (connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) =>  void
     }> = new Map();
-    private Data: Map<string, DatabaseSchema> = new Map()
+    private Data: Map<string, DatabaseSchema> = new Map();
+    private RedisDBConfig: RDBConfig = RDBConfigJson;
 
-    constructor() {
+    public directory: string;
+    public dbFilename: string;
+
+    public RESPEncoder = RESPEncoder;
+
+    constructor(directory: string, dbFilename: string) {
+        this.directory = directory;
+        this.dbFilename = dbFilename;
         this.netServer = net.createServer((connection: net.Socket) =>  this.handleConnection(connection))
     }
 
@@ -54,7 +67,7 @@ class server {
                         name: string,
                         description: string
                     },
-                    run: (connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema> ) =>  void
+                    run: (connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server ) =>  void
                 } = commandModule.default || commandModule;
 
                 this.Commands.set(command.data.name, command)
@@ -94,7 +107,7 @@ class server {
         const command = this.FetchCommand(commandName, connection);
 
         if ( command ) {
-            command.run(connection, args, this.Data);
+            command.run(connection, args, this.Data, this);
             this.PassiveDeletion();
         } else {
             connection.write("-Error: Command not found\r\n")
@@ -107,7 +120,16 @@ class server {
     }
 }
 
-const Server = new server();
+const options = parseCommandLineArgs();
+const directory = options.dir || RDBConfigJson.dir;
+const dbFilename = options.dbfilename || RDBConfigJson.dbfilename;
+
+fs.writeFileSync("./app/configs/rdbconfig.json", `{
+    "dir": "${directory}",
+    "dbfilename": "${dbFilename}"
+}`)
+
+const Server = new server(directory, dbFilename);
 
 Server.GetCommands().catch(error =>  {
     console.error(error);
