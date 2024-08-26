@@ -5,10 +5,9 @@ import { DatabaseSchema, RDBConfig } from "./types";
 import { parseCommandLineArgs } from "./utils/parseCommandLineArgs";
 import { RESPEncoder } from "./utils/RESPEncoder";
 
-import RDBFileLogic from "./utils/RDBFileLogic";
-
 // Config JSON
 import RDBConfigJson from "./configs/rdbconfig.json";
+import parseRDBFile from "./utils/RDBFileDecoder";
 
 // You can use print statements as follows for debugging, they'll be visible when running tests.
 console.log("Logs from your program will appear here!");
@@ -38,23 +37,18 @@ export class server {
         this.dbFilename = dbFilename;
         this.netServer = net.createServer((connection: net.Socket) =>  this.handleConnection(connection))
 
-        RDBFileLogic.getRDBFiles(this, this.Data)
     }
 
     private PassiveDeletion() {
-        const currentTime = Date.now()
-        this.Data.forEach((document) =>  {
-            if ( document.expire ===   0) {
-                return;
-            } 
-
-            if ( document.expire < currentTime ) {
-                this.Data.delete(document.key);
-                console.log("Deleted Expired Data");
+        const currentTime = Date.now();
+        this.Data.forEach((entry, key) => {
+            if (typeof entry.expiration === 'number' && entry.expiration < currentTime) {
+                this.Data.delete(key);
+                console.log(`Deleted expired data for key: ${key}`);
             }
-        })
+        });
     }
-
+    
     async GetCommands(): Promise<void> {
         const CommandsDirectory = fs.readdirSync(`./app/commands/`)
 
@@ -120,7 +114,7 @@ export class server {
 
 
     start(port: number, ipAddress: string) {
-        RDBFileLogic.ensureDirectoryExists(this.directory);
+        parseRDBFile(this.Data, this)
 
         this.netServer.listen(port, ipAddress);
     }
@@ -136,8 +130,11 @@ fs.writeFileSync("./app/configs/rdbconfig.json", `{
 }`)
 
 const Server = new server(directory, dbFilename);
-
 Server.GetCommands().catch(error =>  {
     console.error(error);
 });
-Server.start(6379, "127.0.0.1");
+
+setTimeout(() =>  {
+   Server.start(6379, "127.0.0.1"); 
+}, 1000)
+

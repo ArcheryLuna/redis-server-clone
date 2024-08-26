@@ -1,5 +1,5 @@
 import * as net from "net";
-import { DatabaseSchema } from "../../types";
+import { DatabaseSchema, RedisEntry, RedisValue } from "../../types";
 import { server } from "../../main"
 
 export default {
@@ -7,7 +7,7 @@ export default {
         name: "set",
         description: "This command sets data into the database"
     },
-    async run(connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) {
+    async run(connection: net.Socket, args: any[], Data: Map<string, RedisEntry>, Server: server) {
         if (args.length < 2) {
             connection.write("-Error: No arguments were parsed\r\n");
             return;
@@ -16,23 +16,23 @@ export default {
         const [key, value, modifier, modifierValue] = args;
 
         let existingData = Data.get(key);
-        let expireTime = 0;
+        let expiration: number | undefined = undefined;
 
         if (modifier) {
             const currentTime = Date.now();
 
             switch (modifier.toLowerCase()) {
                 case "ex": // Seconds
-                    expireTime = currentTime + (parseInt(modifierValue) * 1000);
+                    expiration = currentTime + (parseInt(modifierValue) * 1000);
                     break;
                 case "px": // Milliseconds
-                    expireTime = currentTime + parseInt(modifierValue);
+                    expiration = currentTime + parseInt(modifierValue);
                     break;
                 case "exat": // timestamp-seconds
-                    expireTime = parseInt(modifierValue) * 1000;
+                    expiration = parseInt(modifierValue) * 1000;
                     break;
                 case "pxat": // timestamp-milliseconds
-                    expireTime = parseInt(modifierValue);
+                    expiration = parseInt(modifierValue);
                     break;
                 case "nx": // Only set the key if it does not already exist
                     if (existingData) {
@@ -48,12 +48,21 @@ export default {
                     break;
                 case "keepttl": // Retain the time to live associated with the key
                     if (existingData) {
-                        expireTime = existingData.expire;
+                        expiration = existingData.expiration;
                     }
                     break;
                 case "get": // Return the old value stored at key before setting the new value
                     if (existingData) {
-                        connection.write(`$${existingData.value.length}\r\n${existingData.value}\r\n`);
+                        const valueToReturn = existingData.value;
+                        if (typeof valueToReturn === 'string' || Array.isArray(valueToReturn)) {
+                            connection.write(`$${valueToReturn.length}\r\n${valueToReturn}\r\n`);
+                        } else if (valueToReturn instanceof Set) {
+                            connection.write(`$${valueToReturn.size}\r\n${Array.from(valueToReturn).join(',')}\r\n`);
+                        } else if (typeof valueToReturn === 'object') {
+                            connection.write(`$${Object.keys(valueToReturn).length}\r\n${JSON.stringify(valueToReturn)}\r\n`);
+                        } else {
+                            connection.write("$-1\r\n");
+                        }
                     } else {
                         connection.write("$-1\r\n");
                     }
@@ -65,9 +74,8 @@ export default {
         }
 
         Data.set(key, {
-            key: key,
             value: value,
-            expire: expireTime
+            expiration: expiration
         });
 
         connection.write("+OK\r\n");
