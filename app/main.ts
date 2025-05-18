@@ -32,9 +32,10 @@ export class server {
 
     public RESPEncoder = RESPEncoder;
 
-    constructor(directory: string, dbFilename: string) {
+    constructor(directory: string, dbFilename: string, port: number) {
         this.directory = directory;
         this.dbFilename = dbFilename;
+        this.networkPort = port;
         this.netServer = net.createServer((connection: net.Socket) => this.handleConnection(connection))
 
     }
@@ -128,28 +129,29 @@ export class server {
     }
 
 
-    start(port: number, ipAddress: string) {
+    start(ipAddress: string) {
         parseRDBFile(this.Data, this)
         // this.debugPringData();
-        this.netServer.listen(port, ipAddress);
+        this.netServer.listen(this.networkPort, ipAddress);
     }
 }
 
 const options = parseCommandLineArgs();
 const directory = options.dir || RDBConfigJson.dir;
 const dbFilename = options.dbfilename || RDBConfigJson.dbfilename;
+const port = Number(options.port) || 6379;
 
 fs.writeFileSync("./app/configs/rdbconfig.json", `{
     "dir": "${directory}",
     "dbfilename": "${dbFilename}"
 }`)
 
-const Server = new server(directory, dbFilename);
+const Server = new server(directory, dbFilename, port);
 Server.GetCommands().catch(error => {
     console.error(error);
 });
 
 setTimeout(() => {
-    Server.start(6379, "127.0.0.1");
+    Server.start("127.0.0.1");
 }, 1000)
 
