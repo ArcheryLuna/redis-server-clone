@@ -5,35 +5,33 @@ import { server } from "../../main";
 /**
  * KEYS command implementation
  * Only pattern supported for now: "*" (return all keys)
- * Responds using the RESP bulk-array format expected by the tester.
+ * Responds using the RESP bulk‑array format expected by the tester.
  */
 export default {
     data: {
-        name: "get",
-        description: "Retrieve the string value of a key",
+        name: "keys",
+        description: "Return all keys matching a pattern (supports only '*')."
     },
     run(connection: net.Socket, args: string[], Data: Map<string, RedisEntry>, Server: server) {
-        if (args.length === 0) {
-            connection.write(Server.RESPEncoder({ type: "simpleError", content: "ERR wrong number of arguments for 'get' command" }));
+        // Accept both `KEYS *` and bare `KEYS` (treated as '*').
+        const pattern = (args[0] ?? "*").toString();
+
+        if (pattern !== "*") {
+            // Pattern matching is out of scope for this stage.
+            connection.write(Server.RESPEncoder({ type: "simpleError", content: "ERR only '*' pattern supported" }));
             return;
         }
 
-        const key = args[0];
-        const entry = Data.get(key);
+        const keys = Array.from(Data.keys());
 
-        if (!entry) {
-            // Non‑existent key → null bulk string
-            connection.write("$-1\r\n");
-            return;
+        // Build RESP array manually because it's the simplest way and avoids extra dependencies.
+        let resp = `*${keys.length}\r\n`;
+        for (const key of keys) {
+            const byteLen = Buffer.byteLength(key);
+            resp += `$${byteLen}\r\n${key}\r\n`;
         }
 
-        const value = entry.value;
-        if (typeof value !== "string") {
-            connection.write(Server.RESPEncoder({ type: "simpleError", content: "ERR wrong type of value" }));
-            return;
-        }
-
-        connection.write(Server.RESPEncoder({ type: "bulkString", content: value }));
-    },
+        connection.write(resp);
+    }
 };
 
