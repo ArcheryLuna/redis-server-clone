@@ -3,9 +3,18 @@ import { RedisEntry } from "../../types";
 import { server } from "../../main";
 
 /**
- * INFO command – supports only the `replication` section for now.
- * Reply format: RESP bulk string, e.g. `$11\r\nrole:master\r\n`.
+ * INFO command – replication section.
+ * Now returns:
+ *   role:<master|slave>
+ *   master_replid:<40‑char id>      (master only in this stage)
+ *   master_repl_offset:0            (master only – starts at 0)
+ *
+ * Encoded as a RESP bulk string.
  */
+
+const REPL_ID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"; // 40‑char constant
+const REPL_OFFSET = 0;
+
 export default {
     data: {
         name: "info",
@@ -16,14 +25,23 @@ export default {
         const section = (args[0] ?? "").toLowerCase();
 
         if (section !== "replication") {
-            // For any other section or no args, respond with empty bulk string for now.
             connection.write("$-1\r\n");
             return;
         }
 
-        // Decide role dynamically: if the launcher included --replicaof, we are a replica
         const isReplica = process.argv.includes("--replicaof");
-        const payload = `role:${isReplica ? "slave" : "master"}`; // later stages will append more lines
+        const lines: string[] = [];
+
+        if (isReplica) {
+            lines.push("role:slave");
+            // Later stages will add more replica‑specific fields.
+        } else {
+            lines.push("role:master");
+            lines.push(`master_replid:${REPL_ID}`);
+            lines.push(`master_repl_offset:${REPL_OFFSET}`);
+        }
+
+        const payload = lines.join("\r\n");
         connection.write(Server.RESPEncoder({ type: "bulkString", content: payload }));
     },
 };
