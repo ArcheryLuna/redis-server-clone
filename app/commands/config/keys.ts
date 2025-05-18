@@ -2,43 +2,36 @@ import * as net from "net";
 import { RedisEntry } from "../../types";
 import { server } from "../../main";
 
+/**
+ * KEYS command implementation
+ * Only pattern supported for now: "*" (return all keys)
+ * Responds using the RESP bulk‑array format expected by the tester.
+ */
 export default {
     data: {
         name: "keys",
-        description: "Returns all keys in the current in-memory database (supports only the '*' pattern).",
+        description: "Return all keys matching a pattern (supports only '*')."
     },
-
-    async run(
-        connection: net.Socket,
-        args: string[],
-        Data: Map<string, RedisEntry>,
-        Server: server
-    ) {
-        // Accept either zero or one argument.  If omitted, treat as '*'.
-        const pattern = args[0] ?? "*";
+    run(connection: net.Socket, args: string[], Data: Map<string, RedisEntry>, Server: server) {
+        // Accept both `KEYS *` and bare `KEYS` (treated as '*').
+        const pattern = (args[0] ?? "*").toString();
 
         if (pattern !== "*") {
-            connection.write(
-                Server.RESPEncoder({
-                    type: "simpleError",
-                    content: "Only Supports '*' pattern",
-                })
-            );
+            // Pattern matching is out of scope for this stage.
+            connection.write(Server.RESPEncoder({ type: "simpleError", content: "ERR only '*' pattern supported" }));
             return;
         }
 
-        // Every key is stored directly on the Map – no "db0" wrapper.
         const keys = Array.from(Data.keys());
 
-        connection.write(
-            Server.RESPEncoder({
-                type: "array",
-                // RESPEncoder expects its `content` to be a JSON-encoded array of
-                // RESP objects, so we build that just like the older code did.
-                content: JSON.stringify(
-                    keys.map((k) => ({ type: "bulkString", content: k }))
-                ),
-            })
-        );
-    },
+        // Build RESP array manually because it's the simplest way and avoids extra dependencies.
+        let resp = `*${keys.length}\r\n`;
+        for (const key of keys) {
+            const byteLen = Buffer.byteLength(key);
+            resp += `$${byteLen}\r\n${key}\r\n`;
+        }
+
+        connection.write(resp);
+    }
 };
+

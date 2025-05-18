@@ -130,8 +130,7 @@ export class server {
 
     start(port: number, ipAddress: string) {
         parseRDBFile(this.Data, this)
-
-        this.debugPringData();
+        // this.debugPringData();
         this.netServer.listen(port, ipAddress);
     }
 }
