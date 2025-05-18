@@ -1,5 +1,5 @@
 import * as net from "net";
-import { DatabaseSchema } from "../../types";
+import { DatabaseSchema, RedisEntry } from "../../types";
 import { server } from "../../main";
 
 export default {
@@ -7,18 +7,18 @@ export default {
         name: "config",
         description: "This command get's the config data from the config files"
     },
-    async run( connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) {
-        if ( args.length < 2 ) {
+    async run(connection: net.Socket, args: any[], Data: Map<string, RedisEntry>, Server: server) {
+        if (args.length < 2) {
             connection.write("-Error: Not enougth arguments\r\n");
             return;
         }
 
         const commandWord: string = args[0].toLowerCase();
 
-        switch(commandWord) {
+        switch (commandWord) {
             case "get":
                 const configParam: string = args[1].toLowerCase();
-                if ( configParam ===  "dir") {
+                if (configParam === "dir") {
                     const responseArray = [
                         { type: "bulkString", content: "dir" },
                         { type: "bulkString", content: Server.directory }
@@ -27,7 +27,7 @@ export default {
                     connection.write(Server.RESPEncoder({ type: "array", content: JSON.stringify(responseArray) }));
                 }
 
-                else if ( configParam ===   "dbfilename") {
+                else if (configParam === "dbfilename") {
                     const responseArray = [
                         { type: "bulkString", content: "dbfilename" },
                         { type: "bulkString", content: Server.dbFilename }
@@ -39,7 +39,7 @@ export default {
                 else {
                     connection.write("-Error: Unsupported CONFIG subcommand\r\n");
                 }
-                
+
                 break;
             default:
                 connection.write("-Error: Unsupported CONFIG subcommand\r\n");

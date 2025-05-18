@@ -1,7 +1,7 @@
 import * as net from "net";
-import { DatabaseSchema } from "../../types";
+import { DatabaseSchema, RedisEntry } from "../../types";
 import { server } from "../../main";
-import { RESPEncoder } from "../../utils/RESPEncoder"; 
+import { RESPEncoder } from "../../utils/RESPEncoder";
 
 // Basic pattern matching function
 function matchPattern(pattern: string, key: string): boolean {
@@ -21,7 +21,7 @@ export default {
         name: "keys",
         description: "Returns all keys matching pattern."
     },
-    async run(connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) {
+    async run(connection: net.Socket, args: any[], Data: Map<string, RedisEntry>, Server: server) {
         const pattern = args[0];
 
         const allKeys: string[] = [];

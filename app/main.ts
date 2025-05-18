@@ -1,9 +1,11 @@
 import * as net from "net";
 import fs from "fs"
 import path from "path";
-import { DatabaseSchema, RDBConfig } from "./types";
+import { RedisEntry, RDBConfig } from "./types";
+
 import { parseCommandLineArgs } from "./utils/parseCommandLineArgs";
 import { RESPEncoder } from "./utils/RESPEncoder";
+import util from "util"
 
 // Config JSON
 import RDBConfigJson from "./configs/rdbconfig.json";
@@ -13,16 +15,16 @@ import parseRDBFile from "./utils/RDBFileDecoder";
 console.log("Logs from your program will appear here!");
 
 export class server {
-    
+
     private netServer: net.Server
     private Commands: Map<string, {
         data: {
             name: string,
             description: string
         },
-        run: (connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) =>  void
+        run: (connection: net.Socket, args: any[], Data: Map<string, RedisEntry>, Server: server) => void
     }> = new Map();
-    private Data: Map<string, DatabaseSchema> = new Map();
+    private Data: Map<string, RedisEntry> = new Map();
     private RedisDBConfig: RDBConfig = RDBConfigJson;
 
     public directory: string;
@@ -33,7 +35,7 @@ export class server {
     constructor(directory: string, dbFilename: string) {
         this.directory = directory;
         this.dbFilename = dbFilename;
-        this.netServer = net.createServer((connection: net.Socket) =>  this.handleConnection(connection))
+        this.netServer = net.createServer((connection: net.Socket) => this.handleConnection(connection))
 
     }
 
@@ -46,15 +48,15 @@ export class server {
             }
         });
     }
-    
+
     async GetCommands(): Promise<void> {
         const CommandsDirectory = fs.readdirSync(`./app/commands/`)
 
-        for ( const Directory of CommandsDirectory ) {
+        for (const Directory of CommandsDirectory) {
             const Files = fs.readdirSync(`./app/commands/${Directory}`)
-                .filter((file) =>  file.endsWith(".ts"));
-            
-            for ( const File of Files ) {
+                .filter((file) => file.endsWith(".ts"));
+
+            for (const File of Files) {
                 const modulePath = path.join(__dirname, `commands`, Directory, File);
                 const commandModule = await import(modulePath);
 
@@ -63,7 +65,7 @@ export class server {
                         name: string,
                         description: string
                     },
-                    run: (connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server ) =>  void
+                    run: (connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) => void
                 } = commandModule.default || commandModule;
 
                 this.Commands.set(command.data.name, command)
@@ -85,15 +87,15 @@ export class server {
     }
 
     private handleConnection(connection: net.Socket) {
-        connection.on("data", (data: Object) =>  this.handleData(connection, data))
+        connection.on("data", (data: Object) => this.handleData(connection, data))
     }
 
     private handleData(connection: net.Socket, data: Object) {
         console.log(JSON.stringify(data.toString()));
 
-        const ParsedData = data.toString().split("\r\n").filter((line) => 
-            !line.startsWith("*") && 
-            !line.startsWith("$") && 
+        const ParsedData = data.toString().split("\r\n").filter((line) =>
+            !line.startsWith("*") &&
+            !line.startsWith("$") &&
             line !== ""
         );
 
@@ -102,7 +104,7 @@ export class server {
 
         const command = this.FetchCommand(commandName, connection);
 
-        if ( command ) {
+        if (command) {
             command.run(connection, args, this.Data, this);
             this.PassiveDeletion();
         } else {
@@ -110,10 +112,26 @@ export class server {
         }
     }
 
+    private debugPringData() {
+        const rows = Array.from(this.Data.entries()).map(([key, entry]) => ({
+            key,
+            value: typeof entry.value === "string"
+                ? entry.value
+                : util.inspect(entry.value, { depth: 1, breakLength: 20 }),
+            expiration: entry.expiration
+                ? new Date(entry.expiration).toISOString()
+                : "N/A",
+        }));
+        console.log("\n=== In-memory database snapshot ===");
+        console.table(rows);
+        console.log("====================================\n");
+    }
+
 
     start(port: number, ipAddress: string) {
         parseRDBFile(this.Data, this)
 
+        this.debugPringData();
         this.netServer.listen(port, ipAddress);
     }
 }
@@ -128,11 +146,11 @@ fs.writeFileSync("./app/configs/rdbconfig.json", `{
 }`)
 
 const Server = new server(directory, dbFilename);
-Server.GetCommands().catch(error =>  {
+Server.GetCommands().catch(error => {
     console.error(error);
 });
 
-setTimeout(() =>  {
-   Server.start(6379, "127.0.0.1"); 
+setTimeout(() => {
+    Server.start(6379, "127.0.0.1");
 }, 1000)
 

@@ -34,7 +34,7 @@ const RESIZEDB = 0xFB;
 const AUX = 0xFA;
 const STRING_ENCODING = 0x00;
 
-export default function parseRDBFiles(Data: Map<string, DatabaseSchema>, Server: server) {
+export default function parseRDBFiles(Data: Map<string, RedisEntry>, Server: server) {
     const FilePath: string = path.join(Server.directory, Server.dbFilename);
     const buffer: Buffer = fs.readFileSync(FilePath);
 
@@ -44,6 +44,7 @@ export default function parseRDBFiles(Data: Map<string, DatabaseSchema>, Server:
     const MagicString = buffer.toString('ascii', 0, 5);
     const RedisVersion = buffer.toString('ascii', 5, 9);
     offset += 9; // Move past the header
+    Data.clear();
 
     let RDBHeader: RedisRDBHeader = {
         magicString: MagicString,
@@ -55,34 +56,6 @@ export default function parseRDBFiles(Data: Map<string, DatabaseSchema>, Server:
     let currentDb: RedisDatabase | null = null;
     let expiry: number | undefined = undefined;
 
-    function ReadLength(): { length: number, offsetDelta: number } {
-        const FirstByte = buffer[offset];
-
-        if ((FirstByte & 0xC0) === 0x00) {
-            return { length: FirstByte & 0x3F, offsetDelta: 1 }
-        }
-
-        else if ((FirstByte & 0xC0) === 0x40) {
-            return { length: ((FirstByte & 0x3F) << 8) | buffer[offset + 1], offsetDelta: 2 }
-        }
-
-        else if ((FirstByte & 0xC0) === 0x80) {
-            return { length: buffer.readUInt32BE(offset + 1), offsetDelta: 5 }
-        }
-
-        else {
-            throw new Error("Unsupported RDB length encoding")
-        }
-    }
-
-    function ReadString(): string {
-        const { length, offsetDelta } = ReadLength();
-        offset += offsetDelta;
-        const str = buffer.toString('utf8', offset, offset + length);
-        offset += length;
-        return str;
-    }
-
     function readUInt32(): number {
         const value = buffer.readUInt32BE(offset);
         offset += 4;
@@ -92,10 +65,97 @@ export default function parseRDBFiles(Data: Map<string, DatabaseSchema>, Server:
     function ReadUInt64(): number {
         const high = buffer.readUInt32BE(offset);
         const low = buffer.readUInt32BE(offset + 4);
-
         offset += 8;
-
         return high * 2 ** 32 + low;
+    }
+
+    function ReadString(): string {
+        const first = buffer[offset];
+
+        // ── Plain lengths ────────────────────────────────────────────
+        if ((first & 0xC0) === 0x00) {                 // 6-bit
+            const len = first & 0x3F;
+            offset += 1;
+            const str = buffer.toString("utf8", offset, offset + len);
+            offset += len;
+            return str;
+        }
+        if ((first & 0xC0) === 0x40) {                 // 14-bit
+            const len = ((first & 0x3F) << 8) | buffer[offset + 1];
+            offset += 2;
+            const str = buffer.toString("utf8", offset, offset + len);
+            offset += len;
+            return str;
+        }
+        if ((first & 0xC0) === 0x80) {                 // 32-bit
+            const len = buffer.readUInt32BE(offset + 1);
+            offset += 5;
+            const str = buffer.toString("utf8", offset, offset + len);
+            offset += len;
+            return str;
+        }
+
+        // ── Encoded value (0b11xxxxxx) ───────────────────────────────
+        if ((first & 0xC0) === 0xC0) {
+            const encType = first & 0x3F;
+            offset += 1;
+
+            // Integer-encoded strings
+            if (encType === 0) {         // INT8
+                const v = buffer.readInt8(offset);
+                offset += 1;
+                return v.toString();
+            }
+            if (encType === 1) {         // INT16
+                const v = buffer.readInt16BE(offset);
+                offset += 2;
+                return v.toString();
+            }
+            if (encType === 2) {         // INT32
+                const v = buffer.readInt32BE(offset);
+                offset += 4;
+                return v.toString();
+            }
+
+            // LZF compression (encType === 3)
+            // Read <compressed len> and <original len>, then skip the bytes.
+            const { length: clen, offsetDelta: d1 } = readLength();
+            offset += d1;
+            const { length: ulen, offsetDelta: d2 } = readLength();
+            offset += d2;
+
+            const slice = buffer.slice(offset, offset + clen);
+            offset += clen;
+
+            // We don’t need LZF for the current stages – just return placeholder.
+            return `<lzf ${clen}b → ${ulen}b>`;
+        }
+
+        throw new Error("Unsupported RDB length encoding");
+    }
+
+    /**
+     * Original length decoder (unchanged) – still used by readString()
+     * for the 6/14/32-bit cases, and by the LZF branch.
+     */
+    function ReadLength(): { length: number; offsetDelta: number } {
+        const first = buffer[offset];
+
+        if ((first & 0xC0) === 0x00) {
+            return { length: first & 0x3F, offsetDelta: 1 };
+        }
+        if ((first & 0xC0) === 0x40) {
+            return {
+                length: ((first & 0x3F) << 8) | buffer[offset + 1],
+                offsetDelta: 2,
+            };
+        }
+        if ((first & 0xC0) === 0x80) {
+            return { length: buffer.readUInt32BE(offset + 1), offsetDelta: 5 };
+        }
+
+        // Anything else will be handled directly in readString()
+        throw new Error("readLength() called on encoded value");
     }
 
     while (offset < buffer.length) {
@@ -139,17 +199,27 @@ export default function parseRDBFiles(Data: Map<string, DatabaseSchema>, Server:
 
             if (!currentDb) throw new Error("No DB Selected");
 
-            currentDb.keyValues[key] = {
-                value: value,
+            const entry: RedisEntry = {
+                value,
                 ...(expiry !== undefined ? { expiration: expiry } : {})
-            }
+            };
 
-            expiry = undefined
+            currentDb.keyValues[key] = entry;    // keep per-DB structure (future use)
+            Data.set(key, entry);                // ← make it live for commands **now**
+
+            expiry = undefined;
         }
+
         else if (opcode === EOF) {
             break;
         } else {
             continue;
+        }
+    }
+
+    for (const db of databases) {
+        for (const [key, entry] of Object.entries(db.keyValues)) {
+            Data.set(key, entry);
         }
     }
 

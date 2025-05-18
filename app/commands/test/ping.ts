@@ -1,13 +1,13 @@
 import * as net from "net";
-import { DatabaseSchema } from "../../types";
+import { DatabaseSchema, RedisEntry } from "../../types";
 import { server } from "../../main"
 
 export default {
     data: {
         name: "ping",
         description: "A basic debug command"
-    } ,
-    async run( connection: net.Socket, args: any[], Data: Map<string, DatabaseSchema>, Server: server) {
+    },
+    async run(connection: net.Socket, args: any[], Data: Map<string, RedisEntry>, Server: server) {
         connection.write(`+PONG\r\n`)
     }
 }
