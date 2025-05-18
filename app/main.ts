@@ -32,13 +32,12 @@ export class server {
 
     public RESPEncoder = RESPEncoder;
 
-    constructor(directory: string, dbFilename: string, port: number, host: string) {
+    constructor(directory: string, dbFilename: string, port: number) {
         this.directory = directory;
         this.dbFilename = dbFilename;
         this.networkPort = port;
-        this.networkHost = host;
-
         this.netServer = net.createServer((connection: net.Socket) => this.handleConnection(connection))
+
     }
 
     private PassiveDeletion() {
@@ -130,30 +129,30 @@ export class server {
     }
 
 
-    start() {
+    start(ipAddress: string) {
         parseRDBFile(this.Data, this)
         // this.debugPringData();
-        this.netServer.listen(this.networkPort, this.networkHost);
+        this.netServer.listen(this.networkPort, ipAddress);
     }
 }
 
-const options = parseCommandLineArgs();
+export const options = parseCommandLineArgs();
 const directory = options.dir || RDBConfigJson.dir;
 const dbFilename = options.dbfilename || RDBConfigJson.dbfilename;
 const port = Number(options.port) || 6379;
-const host = options.host || "127.0.0.1";
+export const isReplica = Boolean(options.replicaof);
 
 fs.writeFileSync("./app/configs/rdbconfig.json", `{
     "dir": "${directory}",
     "dbfilename": "${dbFilename}"
 }`)
 
-const Server = new server(directory, dbFilename, port, host);
+const Server = new server(directory, dbFilename, port);
 Server.GetCommands().catch(error => {
     console.error(error);
 });
 
 setTimeout(() => {
-    Server.start();
+    Server.start("127.0.0.1");
 }, 1000)
 
