@@ -21,7 +21,9 @@ export default {
             return;
         }
 
-        const payload = "role:master"; // later stages will append more lines
+        // Decide role dynamically: if the launcher included --replicaof, we are a replica
+        const isReplica = process.argv.includes("--replicaof");
+        const payload = `role:${isReplica ? "slave" : "master"}`; // later stages will append more lines
         connection.write(Server.RESPEncoder({ type: "bulkString", content: payload }));
     },
 };
