@@ -1,36 +1,56 @@
 import * as net from "net";
-import { DatabaseSchema, RedisEntry } from "../../types";
+import { RedisEntry } from "../../types";
 import { server } from "../../main";
 
+/**
+ * GET command implementation.
+ * Behaviour summary:
+ *   • If key is missing OR expired → respond with null bulk string ($-1)               
+ *   • If key exists but value is not a string → -ERR wrong type of value              
+ *   • Otherwise → bulk string with the stored value                                   
+ */
 export default {
     data: {
         name: "get",
-        description: "This command gets data from the database"
+        description: "Retrieve the string value of a key (honours expiry)",
     },
-    async run(connection: net.Socket, args: any[], Data: Map<string, RedisEntry>, Server: server) {
-        if (args.length < 1) {
-            connection.write("-Error: No arguments were parsed\r\n");
+    run(connection: net.Socket, args: string[], Data: Map<string, RedisEntry>, Server: server) {
+        // ── 1. Validate argument count ────────────────────────────────────────────
+        if (args.length === 0) {
+            connection.write(
+                Server.RESPEncoder({
+                    type: "simpleError",
+                    content: "ERR wrong number of arguments for 'get' command",
+                }),
+            );
             return;
         }
 
         const key = args[0];
-        const value = Data.get(key);
+        const entry = Data.get(key);
 
-        if (!value) {
-            connection.write("$-1\r\n"); // Key not found
+        // ── 2. Key not present at all ─────────────────────────────────────────────
+        if (!entry) {
+            connection.write("$-1\r\n");
             return;
         }
 
-        const currentTime = Date.now();
-
-        if (typeof value.expiration === 'number') {
-            if (value.expiration <= currentTime) {
-                Data.delete(key);
-                connection.write("$-1\r\n"); // Key expired
-                return;
-            }
+        // ── 3. Key present – check expiry (epoch‑ms). ────────────────────────────
+        if (entry.expiry !== undefined && Date.now() >= entry.expiry) {
+            // Consider it expired: remove from dataset to mimic Redis’s behaviour.
+            Data.delete(key);
+            connection.write("$-1\r\n");
+            return;
         }
 
-        connection.write(`+${value.value}\r\n`);
-    }
-}
+        // ── 4. Type enforcement ───────────────────────────────────────────────────
+        if (typeof entry.value !== "string") {
+            connection.write(Server.RESPEncoder({ type: "simpleError", content: "ERR wrong type of value" }));
+            return;
+        }
+
+        // ── 5. Success ────────────────────────────────────────────────────────────
+        connection.write(Server.RESPEncoder({ type: "bulkString", content: entry.value }));
+    },
+};
+
