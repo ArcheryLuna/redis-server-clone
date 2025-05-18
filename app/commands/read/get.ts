@@ -7,7 +7,7 @@ import { server } from "../../main";
  * Behaviour summary:
  *   • If key is missing OR expired → respond with null bulk string ($-1)               
  *   • If key exists but value is not a string → -ERR wrong type of value              
- *   • Otherwise → bulk string with the stored value                                   
+ *   • Otherwise → bulk string with the stored value                                    
  */
 export default {
     data: {
@@ -35,8 +35,8 @@ export default {
             return;
         }
 
-        // ── 3. Key present – check expiry (epoch‑ms). ────────────────────────────
-        if (entry.expiry !== undefined && Date.now() >= entry.expiry) {
+        // ── 3. Key present – check expiration (epoch‑ms). ─────────────────────────
+        if (entry.expiration !== undefined && Date.now() >= entry.expiration) {
             // Consider it expired: remove from dataset to mimic Redis’s behaviour.
             Data.delete(key);
             connection.write("$-1\r\n");
