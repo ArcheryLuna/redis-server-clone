@@ -36,6 +36,15 @@ const STRING_ENCODING = 0x00;
 
 export default function parseRDBFiles(Data: Map<string, RedisEntry>, Server: server) {
     const FilePath: string = path.join(Server.directory, Server.dbFilename);
+
+    if (!fs.existsSync(FilePath)) {
+        console.warn(
+            `[RDB LOADER] No file at ${FilePath}. Continuing with an empty DB`
+        );
+        Data.clear();
+        return;
+    }
+
     const buffer: Buffer = fs.readFileSync(FilePath);
 
     let offset: number = 0;
@@ -181,7 +190,7 @@ export default function parseRDBFiles(Data: Map<string, RedisEntry>, Server: ser
             const { length: dbHashSize, offsetDelta: deltaOne } = ReadLength();
             offset += deltaOne;
 
-            const { length: expiryHashSize, offsetDelta: deltaTwo } = ReadLength;
+            const { length: expiryHashSize, offsetDelta: deltaTwo } = ReadLength();
             offset += deltaTwo;
 
             console.log(`Resized DB - Hash Table size ${dbHashSize}, expiry table size: ${expiryHashSize}`)
