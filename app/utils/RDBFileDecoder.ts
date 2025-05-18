@@ -71,6 +71,12 @@ export default function parseRDBFiles(Data: Map<string, RedisEntry>, Server: ser
         return value;
     }
 
+    function ReadUInt64LE(buf: Buffer, offset: number): number {
+        const low = buf.readUInt32LE(offset);
+        const high = buf.readUInt32LE(offset + 4);
+        return high * 4294967296 + low;
+    }
+
     function ReadUInt64(): number {
         const high = buffer.readUInt32BE(offset);
         const low = buffer.readUInt32BE(offset + 4);
@@ -200,7 +206,8 @@ export default function parseRDBFiles(Data: Map<string, RedisEntry>, Server: ser
             expiry = seconds * 1000;
         }
         else if (opcode === EXPIRETIMEMS) {
-            expiry = ReadUInt64();
+            expiry = ReadUInt64LE(buffer, offset);
+            offset += 8;
         }
         else if (opcode === STRING_ENCODING) {
             const key = ReadString();
