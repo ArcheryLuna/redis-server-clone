@@ -165,30 +165,38 @@ export class server {
 
     /* ============== handle PONG ================== */
         if (this.handshakeStage === 0 && msg.startsWith("+PONG")) {
-        const listenPort = String(this.listeningPort);
+            const listenPort = String(this.listeningPort);
 
-        /* ---------- stage-1 : REPLCONF listening-port ---------- */
+            /* ---------- stage-1 : REPLCONF listening-port ---------- */
             const replconfListening =
             `*3\r\n` +
             `$8\r\nREPLCONF\r\n` +
             `$14\r\nlistening-port\r\n` +
             `$${listenPort.length}\r\n${listenPort}\r\n`;
 
-        this.upstreamSocket!.write(replconfListening);
-        this.handshakeStage = 1;
-        return;
-    }
+            this.upstreamSocket!.write(replconfListening);
+            this.handshakeStage = 1;
+            return;
+        }
 
-    /* ============== handle 1st +OK ================== */
+        /* ============== handle 1st +OK ================== */
         if (this.handshakeStage === 1 && msg.startsWith("+OK")) {
-        /* ---------- stage-2 : REPLCONF capa psync2 ---------- */
+            /* ---------- stage-2 : REPLCONF capa psync2 ---------- */
             const replconfCapa =
             "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
 
-        this.upstreamSocket!.write(replconfCapa);
-        this.handshakeStage = 2;     // ready for Stage-3 (PSYNC)
+            this.upstreamSocket!.write(replconfCapa);
+            this.handshakeStage = 2;     // ready for Stage-3 (PSYNC)
             return;
-    }
+        }
+
+        /* ============== handle 2nd +OK ================== */
+        if ( this.handshakeStage === 2 && msg.startsWith("+OK")) {
+            const payload = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+            this.upstreamSocket!.write(payload)
+            this.handshakeStage = 3;
+            return;
+        }
     }
 
     private connectToMaster() {
