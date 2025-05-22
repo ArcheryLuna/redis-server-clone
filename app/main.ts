@@ -43,6 +43,8 @@ export class server {
     public RESPEncoder = RESPEncoder;
 
     private upstreamSocket?: net.Socket;
+    private listeningPort!: number;
+    private handshakeStage = 0;
 
     constructor(directory: string, dbFilename: string, isReplica: boolean, replicaHost: string, replicaPort: number) {
         this.directory = directory;
@@ -156,6 +158,39 @@ export class server {
         console.log("====================================\n");
     }
 
+    private onMasterReply(buf: Buffer) {
+        const msg = buf.toString();      // every reply in this stage is a simple string
+        // Remove trailing CRLF just for logging/debug clarity
+        console.log("↙ master:", JSON.stringify(msg.replace(/\r?\n$/, "")));
+
+    /* ============== handle PONG ================== */
+        if (this.handshakeStage === 0 && msg.startsWith("+PONG")) {
+        const listenPort = String(this.listeningPort);
+
+        /* ---------- stage-1 : REPLCONF listening-port ---------- */
+            const replconfListening =
+            `*3\r\n` +
+            `$8\r\nREPLCONF\r\n` +
+            `$14\r\nlistening-port\r\n` +
+            `$${listenPort.length}\r\n${listenPort}\r\n`;
+
+        this.upstreamSocket!.write(replconfListening);
+        this.handshakeStage = 1;
+        return;
+    }
+
+    /* ============== handle 1st +OK ================== */
+        if (this.handshakeStage === 1 && msg.startsWith("+OK")) {
+        /* ---------- stage-2 : REPLCONF capa psync2 ---------- */
+            const replconfCapa =
+            "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
+
+        this.upstreamSocket!.write(replconfCapa);
+        this.handshakeStage = 2;     // ready for Stage-3 (PSYNC)
+            return;
+    }
+    }
+
     private connectToMaster() {
         if (!this.isReplica) return;
 
@@ -170,6 +205,8 @@ export class server {
             },
         );
 
+        this.upstreamSocket.on("data", (buf) => this.onMasterReply(buf))
+
         this.upstreamSocket.on("error", (err) => {
             console.error("Error connecting to master:", err);
         })
@@ -181,6 +218,8 @@ export class server {
     }
 
     start(ipAddress: string, port: number) {
+        this.listeningPort = port;
+
         parseRDBFile(this.Data, this);
         // this.debugPringData();
         // Listen to this server and port
