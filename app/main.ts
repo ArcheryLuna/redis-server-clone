@@ -163,7 +163,7 @@ export class server {
         // Remove trailing CRLF just for logging/debug clarity
         console.log("↙ master:", JSON.stringify(msg.replace(/\r?\n$/, "")));
 
-    /* ============== handle PONG ================== */
+        /* ============== handle PONG ================== */
         if (this.handshakeStage === 0 && msg.startsWith("+PONG")) {
             const listenPort = String(this.listeningPort);
 
