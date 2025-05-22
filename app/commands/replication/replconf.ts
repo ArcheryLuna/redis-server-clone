@@ -1,4 +1,4 @@
-import type net from "net"
+import * as net from "net"
 import { RESPEncoder } from "../../utils/RESPEncoder"
 import { RedisEntry } from "../../types"
 import { server } from "../../main"
