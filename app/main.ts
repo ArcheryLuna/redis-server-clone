@@ -3,6 +3,8 @@ import fs from "fs";
 import path from "path";
 import { RedisEntry, RDBConfig } from "./types";
 
+import { DatabaseSchema } from "./types";
+
 import { parseCommandLineArgs } from "./utils/parseCommandLineArgs";
 import { RESPEncoder } from "./utils/RESPEncoder";
 import util from "util";
@@ -15,226 +17,276 @@ import parseRDBFile from "./utils/RDBFileDecoder";
 console.log("Logs from your program will appear here!");
 
 export class server {
-    private netServer: net.Server;
-    private Commands: Map<
+  private netServer: net.Server;
+  private Commands: Map<
     string,
     {
-        data: {
+      data: {
+        name: string;
+        description: string;
+      };
+      run: (
+        connection: net.Socket,
+        args: any[],
+        Data: Map<string, RedisEntry>,
+        Server: server,
+      ) => void;
+    }
+  > = new Map();
+  private Data: Map<string, RedisEntry> = new Map();
+  private RedisDBConfig: RDBConfig = RDBConfigJson;
+
+  public directory: string;
+  public dbFilename: string;
+  public isReplica: boolean;
+  public replicaHost: string;
+  public replicaPort: number;
+
+  public RESPEncoder = RESPEncoder;
+
+  private upstreamSocket?: net.Socket;
+  private listeningPort!: number;
+  private handshakeStage = 0;
+
+  constructor(
+    directory: string,
+    dbFilename: string,
+    isReplica: boolean,
+    replicaHost: string,
+    replicaPort: number,
+  ) {
+    this.directory = directory;
+    this.dbFilename = dbFilename;
+    this.netServer = net.createServer((connection: net.Socket) =>
+      this.handleConnection(connection),
+    );
+    this.isReplica = isReplica;
+    this.replicaHost = replicaHost;
+    this.replicaPort = replicaPort;
+  }
+
+  private PassiveDeletion() {
+    const currentTime = Date.now();
+    this.Data.forEach((entry, key) => {
+      if (
+        typeof entry.expiration === "number" &&
+        entry.expiration < currentTime
+      ) {
+        this.Data.delete(key);
+        console.log(`Deleted expired data for key: ${key}`);
+      }
+    });
+  }
+
+  async GetCommands(): Promise<void> {
+    const CommandsDirectory = fs.readdirSync(`./app/commands/`);
+
+    for (const Directory of CommandsDirectory) {
+      const Files = fs
+        .readdirSync(`./app/commands/${Directory}`)
+        .filter((file) => file.endsWith(".ts"));
+
+      for (const File of Files) {
+        const modulePath = path.join(__dirname, `commands`, Directory, File);
+        const commandModule = await import(modulePath);
+
+        const command: {
+          data: {
             name: string;
             description: string;
-        };
-        run: (
+          };
+          run: (
             connection: net.Socket,
             args: any[],
-            Data: Map<string, RedisEntry>,
+            Data: Map<string, DatabaseSchema>,
             Server: server,
-        ) => void;
+          ) => void;
+        } = commandModule.default || commandModule;
+
+        this.Commands.set(command.data.name, command);
+
+        console.log(
+          `✔ Initialized ${command.data.name} | ${new Date().toLocaleDateString()}`,
+        );
+      }
     }
-    > = new Map();
-    private Data: Map<string, RedisEntry> = new Map();
-    private RedisDBConfig: RDBConfig = RDBConfigJson;
+  }
 
-    public directory: string;
-    public dbFilename: string;
-    public isReplica: boolean;
-    public replicaHost: string;
-    public replicaPort: number;
+  private FetchCommand(cmd: string, connection: net.Socket) {
+    const command = this.Commands.get(cmd);
 
-    public RESPEncoder = RESPEncoder;
-
-    private upstreamSocket?: net.Socket;
-    private listeningPort!: number;
-    private handshakeStage = 0;
-
-    constructor(directory: string, dbFilename: string, isReplica: boolean, replicaHost: string, replicaPort: number) {
-        this.directory = directory;
-        this.dbFilename = dbFilename;
-        this.netServer = net.createServer((connection: net.Socket) =>
-                                          this.handleConnection(connection),
-                                         );
-                                         this.isReplica = isReplica;
-                                         this.replicaHost = replicaHost;
-                                         this.replicaPort = replicaPort;
+    if (!command) {
+      connection.write("-Error: Command not found\r\n");
+      return;
     }
 
-    private PassiveDeletion() {
-        const currentTime = Date.now();
-        this.Data.forEach((entry, key) => {
-            if (
-                typeof entry.expiration === "number" &&
-                entry.expiration < currentTime
-            ) {
-                this.Data.delete(key);
-                console.log(`Deleted expired data for key: ${key}`);
-            }
-        });
+    return command;
+  }
+
+  private handleConnection(connection: net.Socket) {
+    connection.on("data", (data: Object) => this.handleData(connection, data));
+  }
+
+  private handleData(connection: net.Socket, data: Object) {
+    console.log(JSON.stringify(data.toString()));
+
+    const ParsedData = data
+      .toString()
+      .split("\r\n")
+      .filter(
+        (line) => !line.startsWith("*") && !line.startsWith("$") && line !== "",
+      );
+
+    const commandName = ParsedData[0].toLowerCase();
+    const args = ParsedData.slice(1);
+
+    const command = this.FetchCommand(commandName, connection);
+
+    if (command) {
+      command.run(connection, args, this.Data, this);
+      this.PassiveDeletion();
+    } else {
+      connection.write("-Error: Command not found\r\n");
+    }
+  }
+
+  private debugPrintData() {
+    const rows = Array.from(this.Data.entries()).map(([key, entry]) => ({
+      key,
+      value:
+        typeof entry.value === "string"
+          ? entry.value
+          : util.inspect(entry.value, { depth: 1, breakLength: 20 }),
+      expiration: entry.expiration
+        ? new Date(entry.expiration).toISOString()
+        : "N/A",
+    }));
+    console.log("\n=== In-memory database snapshot ===");
+    console.table(rows);
+    console.log("====================================\n");
+  }
+
+  private onMasterReply(buf: Buffer) {
+    const msg = buf.toString(); // every reply in this stage is a simple string
+    // Remove trailing CRLF just for logging/debug clarity
+    console.log("↙ master:", JSON.stringify(msg.replace(/\r?\n$/, "")));
+
+    /* ============== handle PONG ================== */
+    if (this.handshakeStage === 0 && msg.startsWith("+PONG")) {
+      const listenPort = String(this.listeningPort);
+
+      /* ---------- stage-1 : REPLCONF listening-port ---------- */
+      const replconfListening =
+        `*3\r\n` +
+        `$8\r\nREPLCONF\r\n` +
+        `$14\r\nlistening-port\r\n` +
+        `$${listenPort.length}\r\n${listenPort}\r\n`;
+
+      this.upstreamSocket!.write(replconfListening);
+      this.handshakeStage = 1;
+      return;
     }
 
-    async GetCommands(): Promise<void> {
-        const CommandsDirectory = fs.readdirSync(`./app/commands/`);
+    /* ============== handle 1st +OK ================== */
+    if (this.handshakeStage === 1 && msg.startsWith("+OK")) {
+      /* ---------- stage-2 : REPLCONF capa psync2 ---------- */
+      const replconfCapa =
+        "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
 
-        for (const Directory of CommandsDirectory) {
-            const Files = fs
-            .readdirSync(`./app/commands/${Directory}`)
-            .filter((file) => file.endsWith(".ts"));
-
-            for (const File of Files) {
-                const modulePath = path.join(__dirname, `commands`, Directory, File);
-                const commandModule = await import(modulePath);
-
-                const command: {
-                    data: {
-                        name: string;
-                        description: string;
-                    };
-                    run: (
-                        connection: net.Socket,
-                        args: any[],
-                        Data: Map<string, DatabaseSchema>,
-                        Server: server,
-                    ) => void;
-                } = commandModule.default || commandModule;
-
-                this.Commands.set(command.data.name, command);
-
-                console.log(
-                    `✔ Initialized ${command.data.name} | ${new Date().toLocaleDateString()}`,
-                );
-            }
-        }
+      console.log("Stage 1");
+      this.upstreamSocket!.write(replconfCapa);
+      this.handshakeStage = 2; // ready for Stage-3 (PSYNC)
+      return;
     }
 
-    private FetchCommand(cmd: string, connection: net.Socket) {
-        const command = this.Commands.get(cmd);
-
-        if (!command) {
-            connection.write("-Error: Command not found\r\n");
-            return;
-        }
-
-        return command;
+    /* ============== handle 2nd +OK ================== */
+    if (this.handshakeStage === 2 && msg.startsWith("+OK")) {
+      const payload = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+      this.upstreamSocket!.write(payload);
+      console.log("stage 2");
+      this.handshakeStage = 3;
+      return;
     }
 
-    private handleConnection(connection: net.Socket) {
-        connection.on("data", (data: Object) => this.handleData(connection, data));
+    if (this.handshakeStage === 3 && msg.startsWith("+FULLRESYNC")) {
+      // Minimal valid RDB file (19 bytes)
+      console.log("stage 3 begin");
+      const rdb = Buffer.from([
+        0x52,
+        0x45,
+        0x44,
+        0x49,
+        0x53,
+        0x30,
+        0x30,
+        0x30,
+        0x33, // "REDIS0003"
+        0xfb, // auxiliary opcode
+        0x00, // EOF
+        0x00,
+        0x00,
+        0x00,
+        0x00, // CRC64 (zeros okay)
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+      ]);
+
+      const rdbHeader = Buffer.from(`$${rdb.length}\r\n`);
+
+      // Combine header and binary into one buffer to guarantee correct stream order
+      const combined = Buffer.concat([rdbHeader, rdb]);
+
+      console.log(
+        `✔ Sending FULLRESYNC response + RDB file (${rdb.length} bytes)`,
+      );
+
+      this.upstreamSocket!.write(combined);
+      this.handshakeStage = 4;
+      console.log("stage 3 end");
+      return;
     }
+  }
 
-    private handleData(connection: net.Socket, data: Object) {
-        console.log(JSON.stringify(data.toString()));
+  private connectToMaster() {
+    if (!this.isReplica) return;
 
-        const ParsedData = data
-        .toString()
-        .split("\r\n")
-        .filter(
-            (line) => !line.startsWith("*") && !line.startsWith("$") && line !== "",
+    this.upstreamSocket = net.createConnection(
+      { host: this.replicaHost, port: this.replicaPort },
+      () => {
+        console.log(
+          `Connected to master at ${this.replicaHost}:${this.replicaPort}`,
         );
 
-            const commandName = ParsedData[0].toLowerCase();
-            const args = ParsedData.slice(1);
+        const pingPayload = "*1\r\n$4\r\nPING\r\n";
 
-            const command = this.FetchCommand(commandName, connection);
+        this.upstreamSocket!.write(pingPayload);
+      },
+    );
 
-            if (command) {
-                command.run(connection, args, this.Data, this);
-                this.PassiveDeletion();
-            } else {
-                connection.write("-Error: Command not found\r\n");
-            }
-    }
+    this.upstreamSocket.on("data", (buf) => this.onMasterReply(buf));
 
-    private debugPringData() {
-        const rows = Array.from(this.Data.entries()).map(([key, entry]) => ({
-            key,
-            value:
-                typeof entry.value === "string"
-                    ? entry.value
-                    : util.inspect(entry.value, { depth: 1, breakLength: 20 }),
-                    expiration: entry.expiration
-                        ? new Date(entry.expiration).toISOString()
-                        : "N/A",
-        }));
-        console.log("\n=== In-memory database snapshot ===");
-        console.table(rows);
-        console.log("====================================\n");
-    }
+    this.upstreamSocket.on("error", (err) => {
+      console.error("Error connecting to master:", err);
+    });
 
-    private onMasterReply(buf: Buffer) {
-        const msg = buf.toString();      // every reply in this stage is a simple string
-        // Remove trailing CRLF just for logging/debug clarity
-        console.log("↙ master:", JSON.stringify(msg.replace(/\r?\n$/, "")));
+    this.upstreamSocket.on("close", () => {
+      console.log("Connection to master closed. - Retrying in 5 seconds...");
+      setTimeout(() => this.connectToMaster(), 5000);
+    });
+  }
 
-        /* ============== handle PONG ================== */
-        if (this.handshakeStage === 0 && msg.startsWith("+PONG")) {
-            const listenPort = String(this.listeningPort);
+  start(ipAddress: string, port: number) {
+    this.listeningPort = port;
 
-            /* ---------- stage-1 : REPLCONF listening-port ---------- */
-            const replconfListening =
-            `*3\r\n` +
-            `$8\r\nREPLCONF\r\n` +
-            `$14\r\nlistening-port\r\n` +
-            `$${listenPort.length}\r\n${listenPort}\r\n`;
-
-            this.upstreamSocket!.write(replconfListening);
-            this.handshakeStage = 1;
-            return;
-        }
-
-        /* ============== handle 1st +OK ================== */
-        if (this.handshakeStage === 1 && msg.startsWith("+OK")) {
-            /* ---------- stage-2 : REPLCONF capa psync2 ---------- */
-            const replconfCapa =
-            "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
-
-            this.upstreamSocket!.write(replconfCapa);
-            this.handshakeStage = 2;     // ready for Stage-3 (PSYNC)
-            return;
-        }
-
-        /* ============== handle 2nd +OK ================== */
-        if ( this.handshakeStage === 2 && msg.startsWith("+OK")) {
-            const payload = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
-            this.upstreamSocket!.write(payload)
-            this.handshakeStage = 3;
-            return;
-        }
-    }
-
-    private connectToMaster() {
-        if (!this.isReplica) return;
-
-        this.upstreamSocket = net.createConnection(
-            { host: this.replicaHost, port: this.replicaPort },
-            () => {
-                console.log(`Connected to master at ${this.replicaHost}:${this.replicaPort}`);
-
-                const pingPayload = "*1\r\n$4\r\nPING\r\n"
-
-                this.upstreamSocket!.write(pingPayload);
-            },
-        );
-
-        this.upstreamSocket.on("data", (buf) => this.onMasterReply(buf))
-
-        this.upstreamSocket.on("error", (err) => {
-            console.error("Error connecting to master:", err);
-        })
-
-        this.upstreamSocket.on("close", () => {
-            console.log("Connection to master closed. - Retrying in 5 seconds...");
-            setTimeout(() => this.connectToMaster(), 5000);
-        });
-    }
-
-    start(ipAddress: string, port: number) {
-        this.listeningPort = port;
-
-        parseRDBFile(this.Data, this);
-        // this.debugPringData();
-        // Listen to this server and port
-        this.netServer.listen(port, ipAddress);
-        // Send outputs to the replica server
-        this.connectToMaster();
-    }
+    parseRDBFile(this.Data, this);
+    // this.debugPringData();
+    // Listen to this server and port
+    this.netServer.listen(port, ipAddress);
+    // Send outputs to the replica server
+    this.connectToMaster();
+  }
 }
 
 export const options = parseCommandLineArgs();
@@ -250,40 +302,45 @@ let replicaPort = 6379;
 // If not set we will use the default values.
 
 if (isReplica) {
-    // Example input : ./your_program.sh --port 6380 --replicaof "localhost 6379"
-    // We need to check if the text is "localhost:6379" or "localhost 6379" format
-    const replicaOf = options.replicaof.includes(":")
-        ? options.replicaof.split(":")
-        : options.replicaof.split(" ");
+  // Example input : ./your_program.sh --port 6380 --replicaof "localhost 6379"
+  // We need to check if the text is "localhost:6379" or "localhost 6379" format
+  const replicaOf = options.replicaof.includes(":")
+    ? options.replicaof.split(":")
+    : options.replicaof.split(" ");
 
-        replicaHost = replicaOf[0];
-        replicaPort = Number(replicaOf[1]);
+  replicaHost = replicaOf[0];
+  replicaPort = Number(replicaOf[1]);
 
-        if (replicaHost && replicaPort) {
-            console.log(`Replica of ${replicaHost} on port ${replicaPort}`);
-        } else {
-            console.error(
-                "Invalid replicaof argument. Use 'host:port' or 'host port'.",
-            );
-            process.exit(1);
-        }
+  if (replicaHost && replicaPort) {
+    console.log(`Replica of ${replicaHost} on port ${replicaPort}`);
+  } else {
+    console.error(
+      "Invalid replicaof argument. Use 'host:port' or 'host port'.",
+    );
+    process.exit(1);
+  }
 }
 
-
 fs.writeFileSync(
-    "./app/configs/rdbconfig.json",
-    `{
+  "./app/configs/rdbconfig.json",
+  `{
         "dir": "${directory}",
         "dbfilename": "${dbFilename}"
     }`,
 );
 
-const Server = new server(directory, dbFilename, isReplica, replicaHost, replicaPort);
+const Server = new server(
+  directory,
+  dbFilename,
+  isReplica,
+  replicaHost,
+  replicaPort,
+);
 
 Server.GetCommands().catch((error) => {
-    console.error(error);
+  console.error(error);
 });
 
 setTimeout(() => {
-    Server.start("127.0.0.1", port);
+  Server.start("127.0.0.1", port);
 }, 1000);
